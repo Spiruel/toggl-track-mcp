@@ -1110,6 +1110,152 @@ class TestCreateTimeEntry:
                 assert "Invalid response format for created time entry" in str(exc_info.value)
 
 
+class TestCreateTimeEntryTimesAndBillable:
+    """Start times are normalised to UTC and billable follows the project."""
+
+    ENTRY = {"id": 1, "workspace_id": 123, "description": "", "start": "x", "duration": 3600}
+
+    @staticmethod
+    def _user(timezone="Europe/London"):
+        return TogglUser(
+            id=1, email="t@example.com", fullname="T", timezone=timezone,
+            default_workspace_id=123, beginning_of_week=1,
+            created_at="2023-01-01T00:00:00Z", updated_at="2023-01-01T00:00:00Z",
+        )
+
+    @staticmethod
+    def _router(project=None):
+        """Answer project lookups with `project` and everything else with an entry."""
+
+        async def route(method, path, **kwargs):
+            if method == "GET" and "/projects/" in path:
+                return project
+            return dict(TestCreateTimeEntryTimesAndBillable.ENTRY)
+
+        return route
+
+    async def _payload(self, client, project=None, user=None, **kwargs):
+        user = user or self._user()
+        with patch.object(client, "_make_request", side_effect=self._router(project)) as req:
+            with patch.object(client, "get_current_user", return_value=user) as me:
+                await client.create_time_entry("", **kwargs)
+        posts = [c for c in req.call_args_list if c[0][0] == "POST"]
+        assert len(posts) == 1
+        return posts[0][1]["json_data"], req, me
+
+    @pytest.mark.asyncio
+    async def test_naive_start_is_in_users_timezone_during_bst(self, client):
+        payload, _, _ = await self._payload(
+            client, start_time="2026-10-19T09:00:00", duration_seconds=3600
+        )
+        assert payload["start"] == "2026-10-19T09:00:00+01:00"
+        assert payload["stop"] == "2026-10-19T10:00:00+01:00"
+
+    @pytest.mark.asyncio
+    async def test_naive_start_is_in_users_timezone_after_clocks_change(self, client):
+        payload, _, _ = await self._payload(
+            client, start_time="2026-10-26T09:00:00", duration_seconds=3600
+        )
+        assert payload["start"] == "2026-10-26T09:00:00+00:00"
+        assert payload["stop"] == "2026-10-26T10:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_duration_across_clock_change_is_elapsed_time(self, client):
+        # 25 Oct 2026: clocks go back at 02:00 BST, so 00:00-04:00 GMT is 5 hours.
+        payload, _, _ = await self._payload(
+            client, start_time="2026-10-25T00:00:00", duration_seconds=5 * 3600
+        )
+        assert payload["start"] == "2026-10-25T00:00:00+01:00"
+        assert payload["stop"] == "2026-10-25T04:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_offset_start_is_kept(self, client):
+        payload, _, me = await self._payload(
+            client, start_time="2026-10-19T09:00:00+01:00", duration_seconds=3600
+        )
+        assert payload["start"] == "2026-10-19T09:00:00+01:00"
+        assert payload["stop"] == "2026-10-19T10:00:00+01:00"
+        # An explicit offset needs no timezone lookup.
+        me.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_utc_start_is_unchanged(self, client):
+        payload, _, me = await self._payload(
+            client, start_time="2026-10-19T08:00:00Z", duration_seconds=10800
+        )
+        assert payload["start"] == "2026-10-19T08:00:00Z"
+        assert payload["stop"] == "2026-10-19T11:00:00Z"
+        me.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_timezone_falls_back_to_utc(self, client):
+        payload, _, _ = await self._payload(
+            client,
+            user=self._user("Not/AZone"),
+            start_time="2026-10-19T09:00:00",
+            duration_seconds=60,
+        )
+        assert payload["start"] == "2026-10-19T09:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_invalid_start_time_raises_api_error(self, client):
+        with pytest.raises(TogglAPIError, match="Invalid start_time"):
+            await self._payload(client, start_time="next tuesday", duration_seconds=60)
+
+    @pytest.mark.asyncio
+    async def test_billable_follows_billable_project(self, client):
+        payload, req, _ = await self._payload(
+            client, project={"id": 111, "billable": True}, project_id=111, duration_seconds=60
+        )
+        assert payload["billable"] is True
+        req.assert_any_call("GET", "/workspaces/123/projects/111")
+
+    @pytest.mark.asyncio
+    async def test_billable_follows_non_billable_project(self, client):
+        payload, _, _ = await self._payload(
+            client, project={"id": 111, "billable": False}, project_id=111, duration_seconds=60
+        )
+        assert payload["billable"] is False
+
+    @pytest.mark.asyncio
+    async def test_explicit_billable_skips_project_lookup(self, client):
+        payload, req, _ = await self._payload(
+            client,
+            project={"id": 111, "billable": True},
+            project_id=111,
+            billable=False,
+            duration_seconds=60,
+        )
+        assert payload["billable"] is False
+        assert all(c[0][0] == "POST" for c in req.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_billable_defaults_false_without_project(self, client):
+        payload, req, _ = await self._payload(client, duration_seconds=60)
+        assert payload["billable"] is False
+        assert all(c[0][0] == "POST" for c in req.call_args_list)
+
+
+class TestGetProject:
+    """Test get_project method."""
+
+    @pytest.mark.asyncio
+    async def test_get_project_success(self, client):
+        with patch.object(
+            client, "_make_request", return_value={"id": 111, "name": "P", "billable": True}
+        ) as req:
+            project = await client.get_project(111)
+        req.assert_called_once_with("GET", "/workspaces/123/projects/111")
+        assert isinstance(project, TogglProject)
+        assert project.billable is True
+
+    @pytest.mark.asyncio
+    async def test_get_project_invalid_response(self, client):
+        with patch.object(client, "_make_request", return_value=[]):
+            with pytest.raises(TogglAPIError, match="Invalid response format for project"):
+                await client.get_project(111)
+
+
 class TestAnalyticsAPI:
     """Test the Analytics API methods behind custom reports."""
 

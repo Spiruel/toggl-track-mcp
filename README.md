@@ -169,11 +169,14 @@ The server exposes tools that create data in your workspace. They are **always a
 there is no separate switch, so any client you connect can call them:
 
 - **Create running time entries** - Start new timers with just a description
-- **Create completed time entries** - Add past work with specific durations
+- **Create completed time entries** - Add past or future work with specific durations
 - **Create projects** - With client, colour, billable flag, dates and estimated hours
 - **Create clients** - With optional notes
 - **Add users to projects** - Optionally as project manager
 - **Assign entries to projects**, set billable status, add tags, backdate start times
+- **Local times** - Start times without an offset are read in your Toggl profile's timezone,
+  using the offset for that date, so entries either side of a clock change land correctly
+- **Billable follows the project** - Entries on a billable project are billable unless you say otherwise
 
 ### Example Write Queries
 
@@ -182,6 +185,7 @@ there is no separate switch, so any client you connect can call them:
 "Start a timer for 'Working on feature X' and assign it to project 123"
 "Add a 2-hour billable entry for 'Code review' from 2pm today"
 "Create entry 'Documentation work' with tags 'writing, urgent'"
+"Add 9-12 and 1-5 on project 123 for every weekday next week"
 ```
 
 ### Security Notes

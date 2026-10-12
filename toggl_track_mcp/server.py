@@ -745,7 +745,7 @@ async def create_time_entry(
     project_id: Optional[int] = None,
     start_time: Optional[str] = None,
     duration_minutes: Optional[int] = None,
-    billable: bool = False,
+    billable: Optional[bool] = None,
     tags: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new time entry.
@@ -753,9 +753,12 @@ async def create_time_entry(
     Args:
         description: Time entry description (required)
         project_id: Project ID to assign (optional)
-        start_time: Start time in ISO format (defaults to now)
+        start_time: Start time in ISO format (defaults to now). Give the local time
+            without an offset, e.g. 2026-10-19T09:00:00: it is read in the user's
+            Toggl timezone, with daylight saving applied for that date.
         duration_minutes: Duration in minutes. If not provided, creates running entry
-        billable: Whether entry is billable (default: false)
+        billable: Whether entry is billable (default: the project's billable
+            setting, or false without a project)
         tags: Comma-separated list of tags (optional)
 
     Returns:

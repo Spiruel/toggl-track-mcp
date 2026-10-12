@@ -807,7 +807,7 @@ async def test_create_time_entry_with_project():
             project_id=111,
             start_time=None,
             duration_seconds=None,
-            billable=False,
+            billable=None,
             tags=None,
         )
 
@@ -845,7 +845,7 @@ async def test_create_time_entry_with_custom_start_time():
             project_id=None,
             start_time="2023-01-01T08:00:00Z",
             duration_seconds=7200,  # 120 minutes * 60 seconds
-            billable=False,
+            billable=None,
             tags=None,
         )
 
@@ -884,7 +884,7 @@ async def test_create_time_entry_with_tags():
             project_id=None,
             start_time=None,
             duration_seconds=None,
-            billable=False,
+            billable=None,
             tags=["meeting", "client", "urgent"],
         )
 
@@ -921,7 +921,7 @@ async def test_create_time_entry_with_empty_tags():
             project_id=None,
             start_time=None,
             duration_seconds=None,
-            billable=False,
+            billable=None,
             tags=None,
         )
 
@@ -1043,7 +1043,7 @@ async def test_create_time_entry_zero_duration():
             project_id=None,
             start_time=None,
             duration_seconds=0,
-            billable=False,
+            billable=None,
             tags=None,
         )
 
@@ -1103,7 +1103,7 @@ async def test_create_time_entry_success_running():
         call_args = mock_client.create_time_entry.call_args
         assert call_args[1]["description"] == "Working on feature"
         assert call_args[1]["tags"] == ["development", "urgent"]
-        assert call_args[1]["billable"] is False
+        assert call_args[1]["billable"] is None  # Follows the project
         assert call_args[1]["duration_seconds"] is None  # Running entry
 
 

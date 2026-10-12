@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -23,6 +23,46 @@ from .analytics import (
 from .rate_limiter import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_start_time(value: str) -> datetime:
+    """Parse an ISO 8601 time; a trailing ``Z`` is accepted on Python 3.10."""
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError as e:
+        raise TogglAPIError(
+            f"Invalid start_time {value!r}: expected ISO 8601, "
+            "e.g. 2026-10-19T09:00:00"
+        ) from e
+
+
+def _local_iso(value: datetime) -> str:
+    """Format an aware datetime in its own timezone, e.g. ``...T09:00:00+01:00``.
+
+    A time given in UTC keeps its ``Z`` suffix.
+    """
+    text = value.isoformat(timespec="seconds")
+    return text[:-6] + "Z" if value.tzinfo is timezone.utc else text
+
+
+def _add_seconds(start: datetime, seconds: int) -> datetime:
+    """Add elapsed seconds to ``start``, keeping its timezone.
+
+    Arithmetic on a ``ZoneInfo`` datetime is wall-clock arithmetic, so a duration
+    crossing a clock change would come out an hour off; adding in UTC avoids that.
+    """
+    utc = start.astimezone(timezone.utc) + timedelta(seconds=seconds)
+    return utc.astimezone(start.tzinfo)
+
+
+def _user_zone(user: "TogglUser") -> ZoneInfo:
+    """The user's Toggl timezone, or UTC if this system doesn't know it."""
+    try:
+        return ZoneInfo(user.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("Unknown Toggl timezone %r; using UTC", user.timezone)
+        return ZoneInfo("UTC")
 
 
 class TogglUser(BaseModel):
@@ -381,7 +421,7 @@ class TogglAPIClient:
         duration_seconds: Optional[int] = None,
         project_id: Optional[int] = None,
         task_id: Optional[int] = None,
-        billable: bool = False,
+        billable: Optional[bool] = None,
         tags: Optional[List[str]] = None,
         workspace_id: Optional[int] = None,
     ) -> TogglTimeEntry:
@@ -389,11 +429,14 @@ class TogglAPIClient:
 
         Args:
             description: Time entry description
-            start_time: Start time in ISO format (defaults to now)
+            start_time: Start time in ISO format (defaults to now). A time with no
+                offset is a local time in the user's Toggl timezone, using the
+                offset in force on that date (so daylight saving is handled).
             duration_seconds: Duration in seconds. If None, creates running entry
             project_id: Project ID to assign
             task_id: Task ID to assign
-            billable: Whether entry is billable
+            billable: Whether entry is billable. If None, follows the project's
+                billable setting (False without a project).
             tags: List of tags to assign
             workspace_id: Workspace ID (uses default if not provided)
 
@@ -403,19 +446,34 @@ class TogglAPIClient:
         Raises:
             TogglAPIError: If creation fails
         """
+        user: Optional[TogglUser] = None
+        workspace_id = workspace_id or self.workspace_id
         if not workspace_id:
             user = await self.get_current_user()
-            workspace_id = self.workspace_id or user.default_workspace_id
+            workspace_id = user.default_workspace_id
 
         # Build payload
         import datetime
 
+        start_dt: Optional[datetime.datetime] = None
         if not start_time:
             start_time = (
                 datetime.datetime.now(datetime.timezone.utc)
                 .isoformat()
                 .replace("+00:00", "Z")
             )
+        else:
+            start_dt = _parse_start_time(start_time)
+            if start_dt.tzinfo is None:
+                user = user or await self.get_current_user()
+                start_dt = start_dt.replace(tzinfo=_user_zone(user))
+            start_time = _local_iso(start_dt)
+
+        if billable is None:
+            billable = False
+            if project_id:
+                project = await self.get_project(project_id, workspace_id)
+                billable = bool(project.billable)
 
         payload: Dict[str, Any] = {
             "workspace_id": workspace_id,
@@ -439,9 +497,8 @@ class TogglAPIClient:
             payload["duration"] = duration_seconds
             if duration_seconds > 0:
                 # Calculate stop time
-                start_dt = datetime.datetime.fromisoformat(start_time.rstrip("Z"))
-                stop_dt = start_dt + datetime.timedelta(seconds=duration_seconds)
-                payload["stop"] = stop_dt.isoformat() + "Z"
+                start_dt = start_dt or _parse_start_time(start_time)
+                payload["stop"] = _local_iso(_add_seconds(start_dt, duration_seconds))
         else:
             # Running entry - use negative timestamp
             import time
@@ -461,6 +518,21 @@ class TogglAPIClient:
         if isinstance(data, list):
             return [TogglWorkspace(**workspace) for workspace in data]
         raise TogglAPIError("Invalid response format for workspaces")
+
+    async def get_project(
+        self, project_id: int, workspace_id: Optional[int] = None
+    ) -> TogglProject:
+        """Get a single project."""
+        workspace_id = workspace_id or self.workspace_id
+        if not workspace_id:
+            workspace_id = (await self.get_current_user()).default_workspace_id
+
+        data = await self._make_request(
+            "GET", f"/workspaces/{workspace_id}/projects/{project_id}"
+        )
+        if isinstance(data, dict):
+            return TogglProject(**data)
+        raise TogglAPIError("Invalid response format for project")
 
     async def get_projects(
         self, workspace_id: Optional[int] = None
