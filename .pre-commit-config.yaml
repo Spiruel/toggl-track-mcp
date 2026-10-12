@@ -24,14 +24,15 @@ repos:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
 
-  - repo: https://github.com/pre-commit/mypy
-    rev: v1.5.1
-    hooks:
-      - id: mypy
-        additional_dependencies: [types-all]
-
   - repo: local
     hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy toggl_track_mcp/
+        language: system
+        types: [python]
+        pass_filenames: false
+
       - id: pytest-check
         name: pytest-check
         entry: uv run pytest --co -q
@@ -55,21 +56,21 @@ repos:
           - |
             import sys
             from pathlib import Path
-            
+
             package_dir = Path("toggl_track_mcp")
             test_dir = Path("tests")
-            
+
             missing_tests = []
             for py_file in package_dir.rglob("*.py"):
                 if py_file.name == "__init__.py":
                     continue
-                    
+
                 rel_path = py_file.relative_to(package_dir)
                 test_file = test_dir / f"test_{rel_path}"
-                
+
                 if not test_file.exists():
                     missing_tests.append(str(rel_path))
-            
+
             if missing_tests:
                 print("❌ Missing test files for:")
                 for missing in missing_tests:
@@ -89,36 +90,36 @@ repos:
             import ast
             import sys
             from pathlib import Path
-            
+
             server_file = Path("toggl_track_mcp/server.py")
             test_files = list(Path("tests").glob("test_*.py"))
-            
+
             if not server_file.exists():
                 sys.exit(0)
-            
+
             with open(server_file) as f:
                 tree = ast.parse(f.read())
-            
+
             mcp_tools = []
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef):
                     for decorator in node.decorator_list:
-                        if (isinstance(decorator, ast.Call) and 
+                        if (isinstance(decorator, ast.Call) and
                             isinstance(decorator.func, ast.Attribute) and
                             decorator.func.attr == "tool"):
                             mcp_tools.append(node.name)
-            
+
             test_content = ""
             for test_file in test_files:
                 if test_file.exists():
                     with open(test_file) as f:
                         test_content += f.read()
-            
+
             missing_tool_tests = []
             for tool in mcp_tools:
                 if f"test_{tool}" not in test_content:
                     missing_tool_tests.append(tool)
-            
+
             if missing_tool_tests:
                 print("❌ Missing tests for MCP tools:")
                 for tool in missing_tool_tests:
@@ -137,24 +138,24 @@ repos:
           - |
             import sys
             from pathlib import Path
-            
+
             readme_file = Path("README.md")
-            
+
             if not readme_file.exists():
                 sys.exit(0)
-            
+
             # Read README content
             with open(readme_file) as f:
                 readme_content = f.read().lower()
-            
+
             # Check for basic team features documentation
             team_features = ['team time entries', 'team summary', 'workspace users']
             missing_features = []
-            
+
             for feature in team_features:
                 if feature not in readme_content:
                     missing_features.append(feature)
-            
+
             if missing_features:
                 print("❌ Team features missing from README documentation:")
                 for missing in missing_features:
